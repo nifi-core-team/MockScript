@@ -19,7 +19,7 @@
     <parent>
         <groupId>com.tinkoff</groupId>
         <artifactId>mockscript</artifactId>
-        <version>1.12.0</version>
+        <version>1.16.3</version>
     </parent>
 
     <artifactId>nifi-nifi-nar</artifactId>
@@ -34,7 +34,7 @@
         <dependency>
             <groupId>com.tinkoff</groupId>
             <artifactId>nifi-mock-processors</artifactId>
-            <version>1.12.0</version>
+            <version>1.16.3</version>
         </dependency>
     </dependencies>
 
