@@ -87,81 +87,114 @@ public class MockProcessorTest {
      * system put all results in /nifi-mock-processors/target/out
      * in success and failure, respectively
      */
+
     @Test
     public void testProcessor() throws NoSuchMethodException, IOException {
         TestRunner runner = TestRunners.newTestRunner(MockProcessor.class);
 
-        // Фильтруем только файл с именем "flowfile"
-        File flowfile = new File(sourceDir, "flowfile");
-        if (!flowfile.exists()) {
-            throw new FileNotFoundException("File 'flowfile' not found in " + sourceDir.getAbsolutePath());
-        }
-
-        // Логирование: проверка содержимого файла
-        String fileContent = new String(Files.readAllBytes(flowfile.toPath()), StandardCharsets.UTF_8);
-        System.out.println("FlowFile content to enqueue: " + fileContent); // Логирование содержимого файла
-
-        // Задаём дефолтные атрибуты
-        Map<String, String> attributes = new HashMap<>();
-        String randomUUID = UUID.randomUUID().toString();
-        attributes.put("filename", randomUUID); // Заменяем filename на случайный UUID
-        attributes.put("uuid", randomUUID);     // Также обновляем uuid
-        attributes.put("path", "./");
-        attributes.put("entryDate", String.valueOf(System.currentTimeMillis()));
-        attributes.put("lineageStartDate", String.valueOf(System.currentTimeMillis()));
-        attributes.put("fileSize", String.valueOf(flowfile.length()));
-
-        // Чтение атрибутов из JSON (если файл существует)
-        File attributesFile = new File(sourceDir, "flowfile.attributes.json");
-        if (attributesFile.exists()) {
+        // Чтение общих атрибутов из default.attributes (если файл существует)
+        Map<String, String> defaultAttributes = new HashMap<>();
+        File defaultAttributesFile = new File(sourceDir, "default.attributes");
+        if (defaultAttributesFile.exists()) {
             ObjectMapper objectMapper = new ObjectMapper();
-            Map<String, String> jsonAttributes = objectMapper.readValue(attributesFile, Map.class);
-            attributes.putAll(jsonAttributes); // Объединяем атрибуты
+            defaultAttributes = objectMapper.readValue(defaultAttributesFile, Map.class);
+            System.out.println("Default attributes: " + defaultAttributes);
         }
 
-        // Логирование: проверка атрибутов
-        System.out.println("FlowFile attributes: " + attributes); // Логирование атрибутов
-
-        // Чтение Dynamic Properties из JSON (если файл существует)
+        // Чтение динамических свойств из dynamic-properties.json (если файл существует)
         File dynamicPropertiesFile = new File(sourceDir, "dynamic-properties.json");
         if (dynamicPropertiesFile.exists()) {
             ObjectMapper objectMapper = new ObjectMapper();
             Map<String, String> dynamicProperties = objectMapper.readValue(dynamicPropertiesFile, Map.class);
 
-            // Передаем Dynamic Properties в runner
+            // Передаем динамические свойства в runner
             dynamicProperties.forEach((key, value) -> runner.setProperty(key, value));
 
-            // Логирование: проверка Dynamic Properties
+            // Логирование: проверка динамических свойств
             System.out.println("Dynamic Properties: " + dynamicProperties);
         }
 
-        // Передача файла "flowfile" в процессор с содержимым
-        runner.enqueue(flowfile.toPath(), attributes);
-        runner.run();
+        // Получаем список всех файлов из sourceDir, исключая служебные файлы и файлы с суффиксом .attributes
+        List<Path> sourcePaths = Arrays.stream(sourceDir.listFiles())
+                .map(File::toPath)
+                .filter(path -> !path.getFileName().toString().endsWith(".attributes") &&
+                        !path.getFileName().toString().equals("dynamic-properties.json"))
+                .collect(Collectors.toList());
+
+        if (sourcePaths.isEmpty()) {
+            throw new FileNotFoundException("No valid files found in " + sourceDir.getAbsolutePath());
+        }
+
+        // Добавляем каждый файл в очередь с уникальными атрибутами
+        for (Path path : sourcePaths) {
+            Map<String, String> attributes = new HashMap<>();
+
+            // Генерация уникальных дефолтных атрибутов для каждого файла
+            String randomUUID = UUID.randomUUID().toString();
+            attributes.put("filename", randomUUID); // Уникальное имя файла
+            attributes.put("uuid", randomUUID);     // Уникальный UUID
+            attributes.put("path", "./");
+            attributes.put("entryDate", String.valueOf(System.currentTimeMillis()));
+            attributes.put("lineageStartDate", String.valueOf(System.currentTimeMillis()));
+            attributes.put("fileSize", String.valueOf(Files.size(path)));
+
+            // Добавление общих атрибутов
+            attributes.putAll(defaultAttributes);
+
+            // Чтение специфических атрибутов для текущего файла (если файл существует)
+            String attributeFileName = path.getFileName().toString() + ".attributes";
+            File specificAttributesFile = new File(sourceDir, attributeFileName);
+            if (specificAttributesFile.exists()) {
+                ObjectMapper objectMapper = new ObjectMapper();
+                Map<String, String> specificAttributes = objectMapper.readValue(specificAttributesFile, Map.class);
+
+                // Специфические атрибуты имеют приоритет над общими
+                attributes.putAll(specificAttributes);
+
+                System.out.println("Specific attributes for " + path.getFileName() + ": " + specificAttributes);
+            }
+
+            // Сохраняем оригинальное имя файла в атрибутах
+            attributes.put("originalFilename", path.getFileName().toString());
+
+            // Логирование: проверка содержимого файла
+            String fileContent = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+            System.out.println("Enqueuing file: " + path.getFileName() + ", Content: " + fileContent);
+
+            // Добавляем файл в очередь процессора
+            runner.enqueue(path, attributes);
+        }
+
+        // Запускаем процессор для всех файлов в очереди
+        int fileCount = sourcePaths.size();
+        runner.run(fileCount); // Указываем количество итераций равным количеству файлов
 
         // Обработка результатов
-        List<MockFlowFile> files = runner.getFlowFilesForRelationship(MockProcessor.SUCCESS);
+        List<MockFlowFile> successFiles = runner.getFlowFilesForRelationship(MockProcessor.SUCCESS);
         Class<MockFlowFile> mockFlowFileClass = MockFlowFile.class;
         Method method = mockFlowFileClass.getDeclaredMethod("getData");
         method.setAccessible(true);
 
-        files.stream()
-                .map(file -> {
-                    String filename = file.getAttribute("filename");
-                    byte[] content = getData(file, method);
-                    return new FileToWrite(filename, content, file.getAttributes());
-                })
+        // Сохраняем успешные файлы с уникальными именами
+        successFiles.stream()
+                .map(file -> new FileToWrite(
+                        file.getAttribute("filename"), // Используем уникальное имя файла на основе UUID
+                        getData(file, method),
+                        file.getAttributes()
+                ))
                 .forEach(fileToWrite -> fileToWrite.writeTo(successDir.toPath()));
 
-        List<MockFlowFile> errorFiles = runner.getFlowFilesForRelationship(MockProcessor.FAILURE);
-        errorFiles.stream()
-                .map(file -> {
-                    String filename = file.getAttribute("filename");
-                    byte[] content = getData(file, method);
-                    return new FileToWrite(filename, content, file.getAttributes());
-                })
+        // Сохраняем файлы с ошибками
+        List<MockFlowFile> failureFiles = runner.getFlowFilesForRelationship(MockProcessor.FAILURE);
+        failureFiles.stream()
+                .map(file -> new FileToWrite(
+                        file.getAttribute("filename"), // Используем уникальное имя файла на основе UUID
+                        getData(file, method),
+                        file.getAttributes()
+                ))
                 .forEach(fileToWrite -> fileToWrite.writeTo(failureDir.toPath()));
     }
+    
     public byte[] getData(MockFlowFile flowFile, Method method) {
         try {
             return (byte[]) method.invoke(flowFile);

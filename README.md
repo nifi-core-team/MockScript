@@ -4,9 +4,11 @@
 
 Отредактируйте скрипт на Groovy в файл `/nifi-mock-processors/src/main/resources/script.groovy`.
 
-В каталоге `/nifi-mock-processors/src/main/resources/source` расположены два файла. 
-`flowfile` это файл с входящими данными. 
-`flowfile.attributes.json` файл с атрибутами флоуфайла в формате JSON перечеслены пары ключ - значение.
+В каталоге `/nifi-mock-processors/src/main/resources/source` расположите файлы для обработки. 
+Для примера даны два файла `flowfile1.in` и `flowfile2.in` это файлы с входящими данными. 
+`flowfile1.in.attributes` и `flowfile2.in.attributes` файлы с атрибутами флоуфайла в формате JSON где перечеслены пары ключ - значение.
+Также есть файл с атрибутами для всех файлов `default.attributes` и файл с динамическими свойствами процессора `dynamic-properties.json`.
+Файлы с атрибутами могут отсутсвовать.
 
 Запустите тест `testProcessor()` из пакета `com.tinkoff.processors.mock`.
 
