@@ -22,6 +22,10 @@ if (!in_ff) {
     return
 }
 
+// Получаем динамическое свойство процессора
+def propertyName = 'DynamicProperty1'
+def propertyValue = context.getProperty(propertyName)?.getValue()
+
 // Логирование: проверка атрибутов FlowFile
 log.info("FlowFile attributes: ${in_ff.getAttributes()}")
 
@@ -47,6 +51,9 @@ ${in_ff.getAttributes().entrySet().join("\n")}
 
 JSON атрибут:
 login = ${login}
+
+Dynamic Property:
+${propertyValue}
 """
 
 // Создаем новый FlowFile с результатом

@@ -103,7 +103,6 @@ public class MockProcessorTest {
 
         // Задаём дефолтные атрибуты
         Map<String, String> attributes = new HashMap<>();
-        // Генерация случайного UUID для filename и uuid
         String randomUUID = UUID.randomUUID().toString();
         attributes.put("filename", randomUUID); // Заменяем filename на случайный UUID
         attributes.put("uuid", randomUUID);     // Также обновляем uuid
@@ -117,16 +116,27 @@ public class MockProcessorTest {
         if (attributesFile.exists()) {
             ObjectMapper objectMapper = new ObjectMapper();
             Map<String, String> jsonAttributes = objectMapper.readValue(attributesFile, Map.class);
-            // Объединяем атрибуты: если ключ уже существует, он будет замещён
-            attributes.putAll(jsonAttributes);
+            attributes.putAll(jsonAttributes); // Объединяем атрибуты
         }
 
         // Логирование: проверка атрибутов
         System.out.println("FlowFile attributes: " + attributes); // Логирование атрибутов
 
+        // Чтение Dynamic Properties из JSON (если файл существует)
+        File dynamicPropertiesFile = new File(sourceDir, "dynamic-properties.json");
+        if (dynamicPropertiesFile.exists()) {
+            ObjectMapper objectMapper = new ObjectMapper();
+            Map<String, String> dynamicProperties = objectMapper.readValue(dynamicPropertiesFile, Map.class);
+
+            // Передаем Dynamic Properties в runner
+            dynamicProperties.forEach((key, value) -> runner.setProperty(key, value));
+
+            // Логирование: проверка Dynamic Properties
+            System.out.println("Dynamic Properties: " + dynamicProperties);
+        }
+
         // Передача файла "flowfile" в процессор с содержимым
         runner.enqueue(flowfile.toPath(), attributes);
-
         runner.run();
 
         // Обработка результатов
@@ -134,9 +144,9 @@ public class MockProcessorTest {
         Class<MockFlowFile> mockFlowFileClass = MockFlowFile.class;
         Method method = mockFlowFileClass.getDeclaredMethod("getData");
         method.setAccessible(true);
+
         files.stream()
                 .map(file -> {
-                    // Используем атрибут "filename" для имени файла
                     String filename = file.getAttribute("filename");
                     byte[] content = getData(file, method);
                     return new FileToWrite(filename, content, file.getAttributes());
@@ -146,14 +156,12 @@ public class MockProcessorTest {
         List<MockFlowFile> errorFiles = runner.getFlowFilesForRelationship(MockProcessor.FAILURE);
         errorFiles.stream()
                 .map(file -> {
-                    // Используем атрибут "filename" для имени файла
                     String filename = file.getAttribute("filename");
                     byte[] content = getData(file, method);
                     return new FileToWrite(filename, content, file.getAttributes());
                 })
                 .forEach(fileToWrite -> fileToWrite.writeTo(failureDir.toPath()));
     }
-
     public byte[] getData(MockFlowFile flowFile, Method method) {
         try {
             return (byte[]) method.invoke(flowFile);
