@@ -16,6 +16,7 @@
  */
 package com.tinkoff.processors.mock;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.nifi.util.MockFlowFile;
 import org.apache.nifi.util.TestRunner;
 import org.apache.nifi.util.TestRunners;
@@ -28,12 +29,11 @@ import java.io.*;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 
@@ -89,29 +89,68 @@ public class MockProcessorTest {
      */
     @Test
     public void testProcessor() throws NoSuchMethodException, IOException {
-        TestRunner runner;
-        runner = TestRunners.newTestRunner(MockProcessor.class);
-        List<Path> sourcePaths = Arrays.stream(sourceDir.listFiles())
-                .map(File::toPath)
-                .collect(Collectors.toList());
+        TestRunner runner = TestRunners.newTestRunner(MockProcessor.class);
 
-        Map<String, String> attributes = new HashMap<>();
-        attributes.put("data.name", "dwh.dataname");
-        for (Path path: sourcePaths){
-            runner.enqueue(path, attributes);
+        // Фильтруем только файл с именем "flowfile"
+        File flowfile = new File(sourceDir, "flowfile");
+        if (!flowfile.exists()) {
+            throw new FileNotFoundException("File 'flowfile' not found in " + sourceDir.getAbsolutePath());
         }
 
+        // Логирование: проверка содержимого файла
+        String fileContent = new String(Files.readAllBytes(flowfile.toPath()), StandardCharsets.UTF_8);
+        System.out.println("FlowFile content to enqueue: " + fileContent); // Логирование содержимого файла
+
+        // Задаём дефолтные атрибуты
+        Map<String, String> attributes = new HashMap<>();
+        // Генерация случайного UUID для filename и uuid
+        String randomUUID = UUID.randomUUID().toString();
+        attributes.put("filename", randomUUID); // Заменяем filename на случайный UUID
+        attributes.put("uuid", randomUUID);     // Также обновляем uuid
+        attributes.put("path", "./");
+        attributes.put("entryDate", String.valueOf(System.currentTimeMillis()));
+        attributes.put("lineageStartDate", String.valueOf(System.currentTimeMillis()));
+        attributes.put("fileSize", String.valueOf(flowfile.length()));
+
+        // Чтение атрибутов из JSON (если файл существует)
+        File attributesFile = new File(sourceDir, "flowfile.attributes.json");
+        if (attributesFile.exists()) {
+            ObjectMapper objectMapper = new ObjectMapper();
+            Map<String, String> jsonAttributes = objectMapper.readValue(attributesFile, Map.class);
+            // Объединяем атрибуты: если ключ уже существует, он будет замещён
+            attributes.putAll(jsonAttributes);
+        }
+
+        // Логирование: проверка атрибутов
+        System.out.println("FlowFile attributes: " + attributes); // Логирование атрибутов
+
+        // Передача файла "flowfile" в процессор с содержимым
+        runner.enqueue(flowfile.toPath(), attributes);
+
         runner.run();
+
+        // Обработка результатов
         List<MockFlowFile> files = runner.getFlowFilesForRelationship(MockProcessor.SUCCESS);
         Class<MockFlowFile> mockFlowFileClass = MockFlowFile.class;
         Method method = mockFlowFileClass.getDeclaredMethod("getData");
         method.setAccessible(true);
         files.stream()
-                .map(file -> new FileToWrite(String.valueOf(file.getId()), getData(file, method), null))
+                .map(file -> {
+                    // Используем атрибут "filename" для имени файла
+                    String filename = file.getAttribute("filename");
+                    byte[] content = getData(file, method);
+                    return new FileToWrite(filename, content, file.getAttributes());
+                })
                 .forEach(fileToWrite -> fileToWrite.writeTo(successDir.toPath()));
+
         List<MockFlowFile> errorFiles = runner.getFlowFilesForRelationship(MockProcessor.FAILURE);
         errorFiles.stream()
-                .map(file -> new FileToWrite(String.valueOf(file.getId()), getData(file, method), null))
+                .map(file -> {
+                    // Используем атрибут "filename" для имени файла
+                    String filename = file.getAttribute("filename");
+                    byte[] content = getData(file, method);
+                    return new FileToWrite(filename, content, file.getAttributes());
+                })
                 .forEach(fileToWrite -> fileToWrite.writeTo(failureDir.toPath()));
     }
 
@@ -138,10 +177,11 @@ public class MockProcessorTest {
         }
 
         public void writeTo(Path path) {
+            // Используем переданное имя файла
             File file = path.resolve(this.filename).toFile();
+
             if (!file.exists()) {
-                try {
-                    BufferedOutputStream outputStream = new BufferedOutputStream(new FileOutputStream(file));
+                try (BufferedOutputStream outputStream = new BufferedOutputStream(new FileOutputStream(file))) {
                     outputStream.write(this.content);
                     outputStream.flush();
                 } catch (IOException e) {
@@ -150,5 +190,4 @@ public class MockProcessorTest {
             }
         }
     }
-
 }
