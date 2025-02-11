@@ -16,6 +16,7 @@
  */
 package com.tinkoff.processors.mock;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.nifi.util.MockFlowFile;
 import org.apache.nifi.util.TestRunner;
@@ -105,10 +106,23 @@ public class MockProcessorTest {
         File dynamicPropertiesFile = new File(sourceDir, "dynamic-properties.json");
         if (dynamicPropertiesFile.exists()) {
             ObjectMapper objectMapper = new ObjectMapper();
-            Map<String, String> dynamicProperties = objectMapper.readValue(dynamicPropertiesFile, Map.class);
+            Map<String, Object> dynamicProperties = objectMapper.readValue(dynamicPropertiesFile, Map.class);
 
             // Передаем динамические свойства в runner
-            dynamicProperties.forEach((key, value) -> runner.setProperty(key, value));
+            dynamicProperties.forEach((key, value) -> {
+                if (value instanceof String) {
+                    // Если значение — строка, передаем его напрямую
+                    runner.setProperty(key, (String) value);
+                } else {
+                    // Если значение не строка (например, объект или массив), преобразуем его в JSON-строку
+                    try {
+                        String jsonValue = objectMapper.writeValueAsString(value);
+                        runner.setProperty(key, jsonValue);
+                    } catch (JsonProcessingException e) {
+                        System.err.println("Failed to process dynamic property: " + key + ". Error: " + e.getMessage());
+                    }
+                }
+            });
 
             // Логирование: проверка динамических свойств
             System.out.println("Dynamic Properties: " + dynamicProperties);
