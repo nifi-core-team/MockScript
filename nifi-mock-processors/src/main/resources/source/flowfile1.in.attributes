@@ -1,3 +1,4 @@
 {
-    "specificAttribute": "SpecificValue1"
+    "specificAttribute": "SpecificValue1",
+    "specificAttribute": {"value": "SpecificValue1"}
 }
