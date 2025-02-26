@@ -1,5 +1,5 @@
 {
-  "DynamicProperty1": "Value1",
+  "DynamicProperty1": {"Value1": 1},
   "DynamicProperty2": "Value2",
   "AnotherDynamicProperty": "AnotherValue"
 }

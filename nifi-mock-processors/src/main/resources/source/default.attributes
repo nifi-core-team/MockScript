@@ -1,3 +1,3 @@
 {
-    "commonAttribute": "CommonValue"
+    "commonAttribute": {"test": "CommonValue"}
 }
