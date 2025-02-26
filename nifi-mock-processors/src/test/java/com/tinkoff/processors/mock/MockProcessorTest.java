@@ -16,6 +16,9 @@
  */
 package com.tinkoff.processors.mock;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.nifi.util.MockFlowFile;
 import org.apache.nifi.util.TestRunner;
 import org.apache.nifi.util.TestRunners;
@@ -28,12 +31,11 @@ import java.io.*;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 
@@ -87,34 +89,106 @@ public class MockProcessorTest {
      * system put all results in /nifi-mock-processors/target/out
      * in success and failure, respectively
      */
+
     @Test
     public void testProcessor() throws NoSuchMethodException, IOException {
-        TestRunner runner;
-        runner = TestRunners.newTestRunner(MockProcessor.class);
+        TestRunner runner = TestRunners.newTestRunner(MockProcessor.class);
+        ObjectMapper objectMapper = new ObjectMapper();
+
+        // Чтение общих атрибутов
+        Map<String, String> defaultAttributes = readJsonFile(new File(sourceDir, "default.attributes"), objectMapper);
+        System.out.println("Default attributes: " + defaultAttributes);
+
+        // Чтение динамических свойств
+        Map<String, String> dynamicProperties = readJsonFile(new File(sourceDir, "dynamic-properties.json"), objectMapper);
+        dynamicProperties.forEach((key, value) -> {
+            try {
+                runner.setProperty(key, (value instanceof String) ? (String) value : objectMapper.writeValueAsString(value));
+            } catch (JsonProcessingException e) {
+                System.err.println("Failed to process dynamic property: " + key + ". Error: " + e.getMessage());
+            }
+        });
+        System.out.println("Dynamic Properties: " + dynamicProperties);
+
+        // Получаем список файлов, исключая .attributes и dynamic-properties.json
         List<Path> sourcePaths = Arrays.stream(sourceDir.listFiles())
                 .map(File::toPath)
+                .filter(path -> !path.getFileName().toString().endsWith(".attributes") &&
+                        !path.getFileName().toString().equals("dynamic-properties.json"))
                 .collect(Collectors.toList());
 
-        Map<String, String> attributes = new HashMap<>();
-        attributes.put("data.name", "dwh.dataname");
-        for (Path path: sourcePaths){
+        if (sourcePaths.isEmpty()) {
+            throw new FileNotFoundException("No valid files found in " + sourceDir.getAbsolutePath());
+        }
+
+        // Обработка файлов
+        for (Path path : sourcePaths) {
+            Map<String, String> attributes = new HashMap<>(defaultAttributes);
+            String randomUUID = UUID.randomUUID().toString();
+            attributes.put("filename", randomUUID);
+            attributes.put("uuid", randomUUID);
+            attributes.put("path", "./");
+            attributes.put("entryDate", String.valueOf(System.currentTimeMillis()));
+            attributes.put("lineageStartDate", String.valueOf(System.currentTimeMillis()));
+            attributes.put("fileSize", String.valueOf(Files.size(path)));
+            attributes.put("originalFilename", path.getFileName().toString());
+
+            // Чтение специфических атрибутов
+            Map<String, String> specificAttributes = readJsonFile(new File(sourceDir, path.getFileName().toString() + ".attributes"), objectMapper);
+            attributes.putAll(specificAttributes);
+
+            // Логирование
+            System.out.println("Specific attributes for " + path.getFileName() + ": " + specificAttributes);
+            String fileContent = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+            System.out.println("Enqueuing file: " + path.getFileName() + ", Content: " + fileContent);
+
             runner.enqueue(path, attributes);
         }
 
-        runner.run();
-        List<MockFlowFile> files = runner.getFlowFilesForRelationship(MockProcessor.SUCCESS);
-        Class<MockFlowFile> mockFlowFileClass = MockFlowFile.class;
-        Method method = mockFlowFileClass.getDeclaredMethod("getData");
-        method.setAccessible(true);
-        files.stream()
-                .map(file -> new FileToWrite(String.valueOf(file.getId()), getData(file, method), null))
-                .forEach(fileToWrite -> fileToWrite.writeTo(successDir.toPath()));
-        List<MockFlowFile> errorFiles = runner.getFlowFilesForRelationship(MockProcessor.FAILURE);
-        errorFiles.stream()
-                .map(file -> new FileToWrite(String.valueOf(file.getId()), getData(file, method), null))
-                .forEach(fileToWrite -> fileToWrite.writeTo(failureDir.toPath()));
+        // Запускаем процессор
+        runner.run(sourcePaths.size());
+
+        // Обработка успешных файлов
+        processFiles(runner.getFlowFilesForRelationship(MockProcessor.SUCCESS), successDir);
+        processFiles(runner.getFlowFilesForRelationship(MockProcessor.FAILURE), failureDir);
     }
 
+    private Map<String, String> readJsonFile(File file, ObjectMapper objectMapper) {
+        if (!file.exists()) {
+            return new HashMap<>();
+        }
+        try {
+            Map<String, Object> rawMap = objectMapper.readValue(file, new TypeReference<Map<String, Object>>() {});
+            Map<String, String> parsedMap = new HashMap<>();
+
+            // Преобразуем значения в строку, если они не являются строками
+            for (Map.Entry<String, Object> entry : rawMap.entrySet()) {
+                if (entry.getValue() instanceof String) {
+                    parsedMap.put(entry.getKey(), (String) entry.getValue());
+                } else {
+                    parsedMap.put(entry.getKey(), objectMapper.writeValueAsString(entry.getValue()));
+                }
+            }
+
+            return parsedMap;
+        } catch (IOException e) {
+            System.err.println("Failed to read file: " + file.getName() + ". Error: " + e.getMessage());
+            return new HashMap<>();
+        }
+    }
+
+    private void processFiles(List<MockFlowFile> files, File targetDir) throws NoSuchMethodException {
+        Method method = MockFlowFile.class.getDeclaredMethod("getData");
+        method.setAccessible(true);
+        files.stream()
+                .map(file -> new FileToWrite(
+                        file.getAttribute("filename"),
+                        getData(file, method),
+                        file.getAttributes()
+                ))
+                .forEach(fileToWrite -> fileToWrite.writeTo(targetDir.toPath()));
+    }
+    
     public byte[] getData(MockFlowFile flowFile, Method method) {
         try {
             return (byte[]) method.invoke(flowFile);
@@ -138,10 +212,11 @@ public class MockProcessorTest {
         }
 
         public void writeTo(Path path) {
+            // Используем переданное имя файла
             File file = path.resolve(this.filename).toFile();
+
             if (!file.exists()) {
-                try {
-                    BufferedOutputStream outputStream = new BufferedOutputStream(new FileOutputStream(file));
+                try (BufferedOutputStream outputStream = new BufferedOutputStream(new FileOutputStream(file))) {
                     outputStream.write(this.content);
                     outputStream.flush();
                 } catch (IOException e) {
@@ -150,5 +225,4 @@ public class MockProcessorTest {
             }
         }
     }
-
 }
